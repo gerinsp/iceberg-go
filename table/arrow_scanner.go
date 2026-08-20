@@ -180,7 +180,7 @@ func combinePositionalDeletes(mem memory.Allocator, deletes set[int64], start, e
 
 	for i := start; i < end; i++ {
 		if _, ok := deletes[i]; !ok {
-			bldr.Append(i)
+			bldr.Append(i - start)
 		}
 	}
 
@@ -421,11 +421,8 @@ func synthesizeRowLineageColumns(
 	schema := batch.Schema()
 	nrows := batch.NumRows()
 
-	// Start from the existing columns; we'll replace the row lineage columns in-place
-	// when we need to synthesize values.
 	newCols := append([]arrow.Array(nil), batch.Columns()...)
 
-	// Resolve column indices by name; -1 if not present.
 	rowIDIndices := schema.FieldIndices(iceberg.RowIDColumnName)
 	seqNumIndices := schema.FieldIndices(iceberg.LastUpdatedSequenceNumberColumnName)
 	rowIDColIdx := -1
@@ -440,7 +437,6 @@ func synthesizeRowLineageColumns(
 	bldr := array.NewInt64Builder(alloc)
 	defer bldr.Release()
 
-	// _row_id: inherit first_row_id + row_position when null; else keep value from file.
 	if rowIDColIdx >= 0 && task.FirstRowID != nil {
 		if col, ok := newCols[rowIDColIdx].(*array.Int64); ok {
 			bldr.Reserve(int(nrows))
@@ -459,7 +455,6 @@ func synthesizeRowLineageColumns(
 		}
 	}
 
-	// _last_updated_sequence_number: inherit file's data_sequence_number when null; else keep value from file.
 	if seqNumColIdx >= 0 && task.DataSequenceNumber != nil {
 		if col, ok := newCols[seqNumColIdx].(*array.Int64); ok {
 			bldr.Reserve(int(nrows))
@@ -478,7 +473,6 @@ func synthesizeRowLineageColumns(
 		}
 	}
 
-	// Advance so the next batch from this file uses the correct row position for _row_id.
 	*rowOffset += nrows
 
 	rec := array.NewRecordBatch(schema, newCols, nrows)
@@ -633,8 +627,6 @@ func (as *arrowScan) recordsFromTask(ctx context.Context, task internal.Enumerat
 		return ToRequestedSchema(ctx, as.projectedSchema, iceSchema, r, SchemaOptions{UseLargeTypes: as.useLargeTypes})
 	})
 
-	// Row lineage: optionally fill _row_id and _last_updated_sequence_number from task
-	// constants when in projection.
 	rowLineageEnabled, err := strconv.ParseBool(as.options.Get(ScanOptionRowLineageEnabled, "true"))
 	if err != nil {
 		rowLineageEnabled = true
@@ -698,7 +690,6 @@ func (as *arrowScan) producePosDeletesFromTask(ctx context.Context, task interna
 		return err
 	}
 
-	// Nothing to delete in a dropped file
 	if dropFile {
 		var emptySchema *arrow.Schema
 		emptySchema, err = SchemaToArrowSchema(iceberg.PositionalDeleteSchema, nil, false, as.useLargeTypes)
@@ -806,7 +797,6 @@ func createIterator(ctx context.Context, numWorkers uint, records <-chan enumera
 				}
 
 				if rec.NumRows() == 0 {
-					// skip empty records
 					continue
 				}
 
@@ -829,7 +819,6 @@ func (as *arrowScan) recordBatchesFromTasksAndDeletes(ctx context.Context, tasks
 	ctx, cancel := context.WithCancelCause(exprs.WithExtensionIDSet(ctx, extSet))
 	taskChan := make(chan internal.Enumerated[FileScanTask], len(tasks))
 
-	// numWorkers := 1
 	numWorkers := min(as.concurrency, len(tasks))
 	records := make(chan enumeratedRecord, numWorkers)
 
@@ -903,8 +892,6 @@ func (as *arrowScan) GetRecords(ctx context.Context, tasks []FileScanTask) (*arr
 
 	deletesPerFile, err := readAllDeleteFiles(ctx, as.fs, tasks, as.concurrency)
 	if err != nil {
-		// readAllDeleteFiles can return a partially-populated map alongside
-		// the error if some goroutines completed before the failure.
 		releasePerFilePosDeletes(deletesPerFile)
 
 		return nil, nil, err
@@ -913,7 +900,6 @@ func (as *arrowScan) GetRecords(ctx context.Context, tasks []FileScanTask) (*arr
 	eqDeleteSets, err := readAllEqualityDeleteFiles(ctx, as.fs,
 		as.metadata.CurrentSchema(), tasks, as.concurrency)
 	if err != nil {
-		// Positional deletes were fully loaded; release them before aborting.
 		releasePerFilePosDeletes(deletesPerFile)
 
 		return nil, nil, err
