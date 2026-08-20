@@ -1,0 +1,18 @@
+name: Rivus positional delete patch
+
+on:
+  push:
+    branches:
+      - rivus-v0.6.0-posdelete-fix-ci
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Run positional-delete regression
+        run: go test ./table -run TestProcessPositionalDeletesAcrossBatches -count=1
